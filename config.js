@@ -1,4 +1,2 @@
-/* Public deployment settings. Enter only an HTTPS API origin; never put a password or key here. */
-window.DASHBOARD_CONFIG = Object.freeze({
-  apiBase: ''
-});
+// Public address only. Password verification and storage run on the server.
+window.DASHBOARD_CONFIG = {"apiBase": "https://moy-kurs.smitanin.chatgpt.site"};

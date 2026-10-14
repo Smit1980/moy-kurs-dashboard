@@ -7,6 +7,7 @@ on:
       - 'index.html'
       - 'styles.css'
       - 'app.js'
+      - 'indicators.js'
       - 'config.js'
       - '.nojekyll'
       - '.github/workflows/deploy-pages.yml'
@@ -33,7 +34,7 @@ jobs:
       - name: Prepare public artifact
         run: |
           mkdir _site
-          cp index.html styles.css app.js config.js .nojekyll _site/
+          cp index.html styles.css app.js indicators.js config.js .nojekyll _site/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

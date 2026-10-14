@@ -4,12 +4,11 @@
   const weekdays = { mon: 'Понедельник', tue: 'Вторник', wed: 'Среда', thu: 'Четверг', fri: 'Пятница' };
   const shortDays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт'];
   const colors = ['#232323', '#a6a385', '#ddd71a', '#7c8b7a', '#b8b8b0', '#6c665e', '#c4bc8e'];
-  const configuredApiBase = typeof window.DASHBOARD_CONFIG?.apiBase === 'string' ? window.DASHBOARD_CONFIG.apiBase.trim().replace(/\/$/, '') : '';
-  const hasApi = configuredApiBase.length > 0;
+  const indicators = globalThis.DashboardIndicators;
   const $ = selector => document.querySelector(selector);
   const clone = value => JSON.parse(JSON.stringify(value));
   const number = value => Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
-  const today = () => new Date().toLocaleDateString('sv-SE');
+  const today = () => indicators ? indicators.moscowDate(new Date()) : new Date().toLocaleDateString('sv-SE');
   const uid = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const formatDate = value => value ? new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(`${value}T12:00:00`)) : 'Без срока';
   const dateShift = (value, days) => { const d = new Date(`${value}T12:00:00`); d.setDate(d.getDate() + days); return d.toLocaleDateString('sv-SE'); };
@@ -21,7 +20,8 @@
     if (editable) n.dataset.edit = '';
     n.addEventListener('click', action); return n;
   }
-  let state = null, revision = 0, authenticated = false, csrfToken = '', saving = false;
+  const apiBase = (globalThis.DASHBOARD_CONFIG?.apiBase || '').replace(/\/$/, '');
+  let state = null, revision = 0, authenticated = false, csrfToken = '', sessionToken = '', saving = false;
   const staleFormMessage = 'План изменился. Правки в этой форме не сохранены. Скопируйте нужный текст, закройте форму и откройте актуальную запись заново.';
   const staleForm = form => form && (form.dataset.stale === 'true' || form.dataset.baseRevision !== undefined && Number(form.dataset.baseRevision) !== revision);
 
@@ -30,10 +30,9 @@
     clearTimeout(notify.timer); notify.timer = setTimeout(() => toast.classList.remove('visible'), 5000);
   }
   async function api(path, method = 'GET', body) {
-    if (!hasApi) throw new Error('Сервер личного плана ещё не подключён.');
     let response;
     try {
-      response = await fetch(`${configuredApiBase}/api/${path}`, { method, credentials: 'include', headers: { 'Content-Type': 'application/json', ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      response = await fetch(`${apiBase}/api/${path}`, { method, credentials: apiBase ? 'omit' : 'same-origin', cache: 'no-store', headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}), ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     } catch { throw new Error('Нет связи с сервером. Проверьте подключение и повторите сохранение.'); }
     let data; try { data = await response.json(); } catch { throw new Error('Сервер вернул непонятный ответ. Изменения не подтверждены.'); }
     if (!response.ok) {
@@ -66,7 +65,7 @@
       state = result.state; revision = result.revision;
       $('#saveStatus').textContent = 'Все изменения сохранены'; render(); notify('Сохранено'); return true;
     } catch (error) {
-      if (error.status === 401 || error.status === 403) { authenticated = false; csrfToken = ''; }
+      if (error.status === 401 || error.status === 403) { authenticated = false; csrfToken = ''; sessionToken = ''; }
       if (error.status === 409) {
         // Keep typed text available to copy, but never apply it to a different revision/week.
         document.querySelectorAll('.editor:not(.login-dialog)[open] form').forEach(openForm => { openForm.dataset.stale = 'true'; formError(openForm, staleFormMessage); });
@@ -79,9 +78,34 @@
   const goalName = goalId => state.goals.find(g => g.id === goalId)?.title || 'Цель из архива';
   const sum = (slots, field = 'hours') => slots.reduce((total, s) => total + (Number(s[field]) || 0), 0);
   const recorded = slots => slots.filter(s => s.actualHours !== null && s.actualHours !== undefined);
+  const slotDate = slot => indicators.dateForSlot(state.weekStart, slot.day);
+  const statusFor = slot => indicators.slotStatus(slot, slotDate(slot), today());
+  function statusNode(status, extra = '') {
+    const node = el('span', `status-indicator status-${status.className || status.key} ${extra}`.trim(), status.icon);
+    node.title = status.description || status.label;
+    node.setAttribute('aria-label', status.description || status.label);
+    return node;
+  }
+  function ring(progress, label, className = 'hours-ring', status) {
+    const known = Number.isFinite(progress);
+    const safeProgress = known ? Math.min(100, Math.max(0, progress)) : 0;
+    const node = el('span', `${className}${status ? ` ring-status-${status.key}` : ''}${known ? '' : ' ring-unknown'}`);
+    node.style.setProperty('--progress', `${safeProgress}%`);
+    node.title = label;
+    node.setAttribute('aria-label', label);
+    node.append(el('span', '', known ? `${Math.round(safeProgress)}%` : '—'));
+    return node;
+  }
+  function goalProgress(goal, points) {
+    if (goal.target !== null && goal.target !== undefined && goal.target !== '' && Number(goal.target) > 0) {
+      if (goal.current === null || goal.current === undefined || goal.current === '') return null;
+      return Math.min(100, Math.max(0, Number(goal.current) / Number(goal.target) * 100));
+    }
+    return goal.status === 'done' ? 100 : points.length ? points.filter(point => point.done).length / points.length * 100 : null;
+  }
 
   function renderSummary() {
-    $('#todayLabel').textContent = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
+    $('#todayLabel').textContent = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
     $('#activeCount').textContent = state.goals.filter(g => g.status === 'active').length;
     $('#plannedSummary').textContent = number(sum(state.schedule));
     $('#doneCount').textContent = state.checkpoints.filter(c => c.done).length;
@@ -104,6 +128,13 @@
     for (const goal of goals) {
       const card = el('article', 'goal-card'), top = el('div', 'goal-topline');
       add(top, el('span', 'area-chip', goal.area), el('span', `badge status-${goal.status}`, statuses[goal.status]));
+      const points = state.checkpoints.filter(c => c.goalId === goal.id), goalIndicator = indicators.goalStatus(goal, points, today());
+      const goalProgressValue = goalProgress(goal, points);
+      const resultRing = button('', 'goal-ring-button', () => openGoal(goal.id));
+      resultRing.append(ring(goalProgressValue, goalProgressValue === null ? 'Движение к результату: нет факта' : `Движение к результату: ${Math.round(goalProgressValue)}%`, 'goal-ring', goalIndicator));
+      resultRing.append(statusNode(goalIndicator));
+      resultRing.title = `${goalIndicator.label}. Нажмите, чтобы уточнить показатель цели.`;
+      top.append(resultRing);
       const metric = el('div', 'metric');
       if (goal.target !== null && goal.target !== undefined && goal.target !== '') {
         add(metric, el('strong', '', goal.current === null || goal.current === '' ? '—' : number(goal.current)), el('span', '', ` / ${number(goal.target)} ${goal.unit || ''}`));
@@ -111,11 +142,11 @@
           const track = el('div', 'progress-track'), fill = el('span', 'progress-bar'); fill.style.width = `${Math.min(100, Math.max(0, Number(goal.current) / Number(goal.target) * 100))}%`; track.append(fill); metric.append(track);
         } else metric.append(el('small', '', 'Фактическое значение ещё не внесено'));
       } else metric.append(el('small', '', 'Результат оценивается по контрольным точкам'));
-      const points = state.checkpoints.filter(c => c.goalId === goal.id), meta = el('div', 'goal-meta');
+      const meta = el('div', 'goal-meta');
       add(meta, el('span', '', `Срок: ${formatDate(goal.deadline)}`), el('span', '', `${points.filter(c => c.done).length}/${points.length} точек`));
       if (goal.weeklyHours !== null && goal.weeklyHours !== undefined) meta.append(el('span', '', `Ориентир: ${number(goal.weeklyHours)} ч/нед`));
       const actions = el('div', 'goal-actions'); add(actions, button('Изменить цель ↗', 'text-button', () => openGoal(goal.id)), button('+ Точка', 'text-button', () => openCheckpoint(null, goal.id)));
-      add(card, top, el('h3', '', goal.title), el('p', 'goal-outcome', goal.outcome || 'Укажите ожидаемый результат.'), metric, meta, actions);
+      add(card, top, el('h3', '', goal.title), el('p', 'goal-outcome', goal.outcome || 'Укажите ожидаемый результат.'), metric, el('p', `goal-status-text status-text-${goalIndicator.key}`, `${goalIndicator.icon} ${goalIndicator.label}`), meta, actions);
       if (goal.note) { const details = el('details', 'goal-note'); add(details, el('summary', '', 'Основание и оговорки'), el('p', '', goal.note)); card.append(details); }
       container.append(card);
     }
@@ -123,19 +154,20 @@
   }
   function renderTime() {
     const total = sum(state.schedule), capacity = state.capacity, actual = sum(recorded(state.schedule), 'actualHours');
+    const weekIndicator = indicators.aggregateStatus(state.schedule.map(statusFor));
     $('#weekStart').value = state.weekStart;
     $('#capacityLabel').textContent = `${number(capacity)} ч`;
     $('#loadHours').textContent = `${number(total)} ч`;
     $('#loadDescription').textContent = `из ${number(capacity)} ч рабочего бюджета`;
     $('#freeHours').textContent = total > capacity ? `Перегрузка: ${number(total - capacity)} ч` : `Не распределено: ${number(capacity - total)} ч`;
     $('#freeHours').classList.toggle('overload', total > capacity);
-    $('#actualSummary').textContent = recorded(state.schedule).length ? `Факт: ${number(actual)} ч · заполнено ${recorded(state.schedule).length}/${state.schedule.length} блоков` : 'Факт ещё не внесён';
+    $('#actualSummary').textContent = recorded(state.schedule).length ? `Факт: ${number(actual)} ч · заполнено ${recorded(state.schedule).length}/${state.schedule.length} блоков · ${weekIndicator.description}` : `Факт ещё не внесён · ${weekIndicator.description}`;
     const segments = $('#loadSegments'); segments.replaceChildren();
     const goals = state.goals.filter(g => g.status === 'active' || g.weeklyHours != null && g.status !== 'paused' && g.status !== 'done' || state.schedule.some(s => s.goalId === g.id));
     const matrix = $('#goalLoad'); matrix.replaceChildren();
     const head = el('div', 'goal-load-head'); add(head, el('span', '', 'Цель / ориентир'), el('span', '', 'План по дням, ч'), el('span', '', 'План / факт')); matrix.append(head);
     goals.forEach((goal, index) => {
-      const slots = state.schedule.filter(s => s.goalId === goal.id), hours = sum(slots), known = recorded(slots), color = colors[index % colors.length];
+      const slots = state.schedule.filter(s => s.goalId === goal.id), hours = sum(slots), known = recorded(slots), color = colors[index % colors.length], aggregate = indicators.aggregateStatus(slots.map(statusFor));
       if (hours > 0) { const segment = el('span', 'load-segment'); segment.style.width = `${hours / Math.max(capacity, total, 1) * 100}%`; segment.style.background = color; segment.title = `${goal.title}: ${number(hours)} ч`; segments.append(segment); }
       const row = el('article', 'goal-load-row'), label = el('div', 'goal-load-name');
       const dot = el('span', 'goal-color'); dot.style.background = color;
@@ -143,23 +175,27 @@
       label.title = goal.title;
       const days = el('div', 'goal-load-days');
       Object.keys(weekdays).forEach((day, dayIndex) => {
-        const daySlots = slots.filter(s => s.day === day), dayHours = sum(daySlots);
-        const cell = button('', `goal-load-day ${dayHours ? 'has-hours' : ''}`, () => openDay(goal.id, day));
-        cell.setAttribute('aria-label', `${goal.title}, ${weekdays[day]}: ${number(dayHours)} ч. Изменить блоки`);
-        add(cell, el('small', '', shortDays[dayIndex]), el('strong', '', dayHours ? number(dayHours) : '—')); days.append(cell);
+        const daySlots = slots.filter(s => s.day === day), dayHours = sum(daySlots), dayStatus = indicators.aggregateStatus(daySlots.map(statusFor));
+        const cell = button('', `goal-load-day day-cell ${dayHours ? `has-hours status-cell-${dayStatus.key}` : ''}`, () => openDay(goal.id, day));
+        cell.setAttribute('aria-label', `${goal.title}, ${weekdays[day]}: ${number(dayHours)} ч. ${dayStatus.description}. Изменить блоки`);
+        add(cell, el('small', '', shortDays[dayIndex]), el('strong', '', dayHours ? number(dayHours) : '—'), dayHours ? statusNode(dayStatus) : el('span', 'status-indicator empty-status', '')); days.append(cell);
       });
-      const totalCell = el('div', 'goal-load-total'); add(totalCell, el('strong', '', `${number(hours)} / ${known.length ? number(sum(known, 'actualHours')) : '—'}`), el('small', '', known.length && known.length < slots.length ? 'факт частично' : 'часов'));
+      const totalCell = el('div', 'goal-load-total'); add(totalCell, statusNode(aggregate), el('strong', '', `${number(hours)} / ${known.length ? number(sum(known, 'actualHours')) : '—'}`), el('small', '', aggregate.description));
       if (goal.weeklyHours != null && hours < goal.weeklyHours) totalCell.append(el('small', 'load-gap', `ещё ${number(goal.weeklyHours - hours)} до ориентира`));
       add(row, label, days, totalCell); matrix.append(row);
     });
     if (!goals.length) matrix.append(el('p', 'empty', 'Добавьте цель и первый блок недели.'));
     const plan = $('#weekPlan'); plan.replaceChildren();
     Object.entries(weekdays).forEach(([day, name], i) => {
-      const slots = state.schedule.filter(s => s.day === day), card = el('article', 'day-column');
-      add(card, el('h3', '', name), el('p', 'day-total', `${formatDate(dateShift(state.weekStart, i))} · ${number(sum(slots))} ч`));
+      const slots = state.schedule.filter(s => s.day === day), dayIndicator = indicators.aggregateStatus(slots.map(statusFor)), card = el('article', `day-column ${slots.length ? `day-status-${dayIndicator.key}` : ''}`);
+      const dayTitle = el('h3', `day-heading ${slots.length ? `status-text-${dayIndicator.key}` : ''}`); add(dayTitle, el('span', '', name), slots.length ? statusNode(dayIndicator) : el('span', 'status-indicator empty-status', ''));
+      const dateLine = el('p', `day-total ${slots.length ? `status-text-${dayIndicator.key}` : ''}`, `${formatDate(dateShift(state.weekStart, i))} · ${number(sum(slots))} ч · ${slots.length ? dayIndicator.description : 'нет блоков'}`);
+      add(card, dayTitle, dateLine);
       for (const slot of slots) {
         const row = button('', 'slot', () => openSlot(slot.id));
-        add(row, el('strong', '', slot.title), el('span', '', `${number(slot.hours)} ч план · ${slot.actualHours == null ? 'факт —' : `${number(slot.actualHours)} ч факт`}`)); card.append(row);
+        const slotIndicator = statusFor(slot), planned = Number(slot.hours) || 0, progress = slot.actualHours == null ? null : Math.min(100, Number(slot.actualHours) / Math.max(planned, 0.01) * 100);
+        const dial = ring(progress, `${slotIndicator.label}: ${slot.actualHours == null ? 'нет факта' : number(slot.actualHours)} из ${number(planned)} часов`, 'hours-ring', slotIndicator);
+        add(row, dial, statusNode(slotIndicator), el('strong', '', slot.title), el('span', '', `${number(slot.hours)} ч план · ${slot.actualHours == null ? 'факт —' : `${number(slot.actualHours)} ч факт`}${slotIndicator.excess ? ` · +${number(slotIndicator.excess)} ч сверх плана` : ''}`), el('small', `slot-status status-text-${slotIndicator.key}`, slotIndicator.label)); card.append(row);
       }
       if (!slots.length) card.append(el('p', 'empty', 'Пока нет блоков'));
       card.append(button('+ Блок', 'text-button', () => openSlot(null, day))); plan.append(card);
@@ -170,10 +206,12 @@
     const items = [...state.checkpoints].sort((a, b) => Number(a.done) - Number(b.done) || (a.due || '9999').localeCompare(b.due || '9999'));
     if (!items.length) list.append(el('p', 'empty', 'Добавьте контрольную точку для первой цели.'));
     for (const item of items) {
-      const row = el('article', `checkpoint ${item.done ? 'completed' : ''}`), check = el('input'); check.type = 'checkbox'; check.checked = item.done; check.dataset.edit = ''; check.setAttribute('aria-label', `Выполнено: ${item.title}`);
+      const overdue = item.due && item.due < today() && !item.done;
+      const pointState = item.done ? indicators.statusMeta.complete : overdue ? indicators.statusMeta.missing : indicators.statusMeta.neutral;
+      const row = el('article', `checkpoint ${item.done ? 'completed' : ''} ${overdue ? 'checkpoint-overdue' : ''}`), check = el('input'); check.type = 'checkbox'; check.checked = item.done; check.dataset.edit = ''; check.setAttribute('aria-label', `Выполнено: ${item.title}`);
       check.addEventListener('change', async () => { const done = check.checked; await mutate(draft => { const cp = draft.checkpoints.find(c => c.id === item.id); cp.done = done; cp.completedAt = done ? new Date().toISOString() : null; }); });
       const content = el('div', 'checkpoint-body'); add(content, el('strong', '', item.title), el('span', '', `${goalName(item.goalId)}${item.criterion ? ` · ${item.criterion}` : ''}`));
-      const right = el('div', 'checkpoint-right'); add(right, el('time', item.due && item.due < today() && !item.done ? 'overload' : '', formatDate(item.due)), button('Изменить ↗', 'text-button', () => openCheckpoint(item.id)));
+      const right = el('div', 'checkpoint-right'); add(right, statusNode(pointState), el('time', overdue ? 'overload' : '', formatDate(item.due)), el('small', `status-text-${pointState.key}`, pointState.label), button('Изменить ↗', 'text-button', () => openCheckpoint(item.id)));
       add(row, check, content, right); list.append(row);
     }
   }
@@ -215,6 +253,7 @@
   function openSlot(itemId, day = 'mon', goalId) {
     if (!prepare('#slotForm', state.schedule, itemId, goalId, ['goalId', 'day', 'title', 'hours', 'actualHours'])) return;
     if (!itemId) { $('#slotForm').elements.day.value = day; $('#slotForm').elements.hours.value = 1; }
+    syncActualHoursControls();
     $('#deleteSlot').hidden = !itemId; $('#slotDialogTitle').textContent = itemId ? 'Изменить блок' : 'Добавить блок';
   }
   function openDay(goalId, day) {
@@ -244,6 +283,17 @@
     const value = { day: v.day, goalId: v.goalId, title: v.title.trim(), hours: Number(v.hours), actualHours: nullable(v.actualHours) };
     if (await mutate(draft => { const item = draft.schedule.find(s => s.id === editId); if (item) Object.assign(item, value); else draft.schedule.push({ id: uid(), ...value }); }, form)) $('#slotDialog').close();
   });
+  function syncActualHoursControls(source) {
+    const form = $('#slotForm'), actual = form.elements.actualHours, slider = form.elements.actualHoursRange, planned = Number(form.elements.hours.value) || 0;
+    slider.max = String(Math.max(24, planned * 2));
+    if (source === 'slider') actual.value = slider.value;
+    else if (actual.value !== '' && Number.isFinite(Number(actual.value))) slider.value = actual.value;
+    const hint = $('#actualHoursHint');
+    hint.textContent = actual.value === '' ? 'Нет отметки: введите 0, если факт равен нулю.' : `Факт: ${number(actual.value)} ч. Ползунок и число синхронизированы.`;
+  }
+  $('#slotForm').elements.actualHours.addEventListener('input', () => syncActualHoursControls('number'));
+  $('#slotForm').elements.actualHoursRange.addEventListener('input', () => syncActualHoursControls('slider'));
+  $('#slotForm').elements.hours.addEventListener('input', () => syncActualHoursControls('number'));
   $('#reviewForm').addEventListener('submit', async event => {
     event.preventDefault(); const form = event.currentTarget; if (!requireText(form, ['observation', 'decision'])) return; const v = values(form), editId = form.dataset.editId;
     const value = { goalId: v.goalId, observation: v.observation.trim(), decision: v.decision.trim(), planCompletion: nullable(v.planCompletion), nextReview: v.nextReview };
@@ -271,17 +321,18 @@
   $('#loginForm').addEventListener('submit', async event => {
     event.preventDefault(); $('#loginSubmit').disabled = true; $('#loginError').hidden = true;
     try {
-      const result = await api('login', 'POST', { password: $('#loginPassword').value }); authenticated = true; csrfToken = result.csrfToken;
+      const result = await api('login', 'POST', { password: $('#loginPassword').value }); authenticated = true; csrfToken = result.csrfToken; sessionToken = result.sessionToken || '';
       $('#loginPassword').value = ''; await loadState(); $('#loginDialog').close(); $('#connectionError').hidden = true;
     } catch (error) { $('#loginError').textContent = error.status === 401 ? 'Пароль не подошёл. Попробуйте ещё раз.' : error.message; $('#loginError').hidden = false; }
     finally { $('#loginSubmit').disabled = false; setControls(); }
   });
   $('#authButton').addEventListener('click', async () => {
     if (!authenticated) return openLogin();
-    try { await api('logout', 'POST', {}); authenticated = false; csrfToken = ''; setControls(); notify('Редактирование заблокировано'); }
+    try { await api('logout', 'POST', {}); authenticated = false; csrfToken = ''; sessionToken = ''; setControls(); notify('Редактирование заблокировано'); }
     catch (error) { notify(error.message); }
   });
   $('#openLogin').addEventListener('click', openLogin);
+  $('#openHelp').addEventListener('click', () => show($('#helpDialog')));
   for (const selector of ['#addGoalTop', '#addGoal']) $(selector).addEventListener('click', () => openGoal());
   $('#addCheckpoint').addEventListener('click', () => openCheckpoint()); $('#addSlot').addEventListener('click', () => openSlot());
   for (const selector of ['#addReviewTop', '#addReview']) $(selector).addEventListener('click', () => openReview());
@@ -305,16 +356,15 @@
     finally { event.target.value = ''; }
   });
   async function init() {
-    if (!hasApi) {
-      $('#authButton').hidden = true;
-      $('#openLogin').hidden = true;
-      $('#lockedDescription').innerHTML = 'Сервер личного плана ещё не подключён.<br>На GitHub Pages опубликован только интерфейс; личные данные сюда не загружаются.';
-      $('#localFallback').hidden = false;
-      $('#connectionError').hidden = true;
-      return;
-    }
-    try { const session = await api('session'); authenticated = session.authenticated; csrfToken = session.csrfToken || ''; if (authenticated) await loadState(); else setControls(); }
+    try { const session = await api('session'); authenticated = session.authenticated; csrfToken = session.csrfToken || ''; await loadState(); }
     catch (error) { $('#connectionError').textContent = error.message; $('#connectionError').hidden = false; }
   }
+  let renderedDate = today();
+  function refreshDate() {
+    const currentDate = today();
+    if (state && currentDate !== renderedDate) { renderedDate = currentDate; render(); }
+  }
+  setInterval(refreshDate, 60_000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshDate(); });
   init();
 })();
