@@ -21,7 +21,7 @@
     n.addEventListener('click', action); return n;
   }
   const apiBase = (globalThis.DASHBOARD_CONFIG?.apiBase || '').replace(/\/$/, '');
-  let state = null, revision = 0, authenticated = false, csrfToken = '', sessionToken = '', saving = false, selectedWeek = '';
+  let state = null, revision = 0, authenticated = false, csrfToken = '', sessionToken = '', saving = false, selectedWeek = '', authEpoch = 0;
   const staleFormMessage = 'План изменился. Правки в этой форме не сохранены. Скопируйте нужный текст, закройте форму и откройте актуальную запись заново.';
   const staleForm = form => form && (form.dataset.stale === 'true' || form.dataset.baseRevision !== undefined && Number(form.dataset.baseRevision) !== revision || form.dataset.weekStart && form.dataset.weekStart !== selectedWeek);
 
@@ -53,13 +53,16 @@
   function formError(form, message = '') {
     const node = form.querySelector('.form-error'); if (node) { node.textContent = message; node.hidden = !message; }
   }
+  function beginSave() { if (saving) return false; saving = true; setControls(); $('#saveStatus').textContent = 'Сохраняем…'; $('.sync-dot')?.setAttribute('data-state', 'saving'); return true; }
+  function endSave(ok) { saving = false; $('#saveStatus').textContent = ok ? 'Все изменения сохранены' : 'Изменения не сохранены'; $('.sync-dot')?.setAttribute('data-state', ok ? 'saved' : 'error'); setControls(); }
+  function expireSession() { authenticated = false; csrfToken = ''; sessionToken = ''; authEpoch++; globalThis.DashboardFinance?.clear(); setControls(); }
   async function loadState() {
     const result = await api('state'); state = result.state; revision = result.revision;
     if (!selectedWeek) selectedWeek = monday(today());
     $('#lockedScreen').hidden = true; $('#workspace').hidden = false;
     $('#connectionError').hidden = true;
     $('#updatedAt').textContent = `Обновлено ${new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit' }).format(new Date())}`;
-    $('#saveStatus').textContent = 'Все изменения сохранены'; $('.sync-dot')?.setAttribute('data-state', 'saved'); render();
+    $('#saveStatus').textContent = 'Все изменения сохранены'; $('.sync-dot')?.setAttribute('data-state', 'saved'); render(); globalThis.DashboardFinance?.render();
   }
   async function mutate(change, form) {
     if (!authenticated || saving) { if (!authenticated) openLogin(); return false; }
@@ -71,7 +74,7 @@
       state = result.state; revision = result.revision;
       $('#saveStatus').textContent = 'Все изменения сохранены'; $('.sync-dot')?.setAttribute('data-state', 'saved'); render(); notify('Сохранено'); return true;
     } catch (error) {
-      if (error.status === 401 || error.status === 403) { authenticated = false; csrfToken = ''; sessionToken = ''; }
+      if (error.status === 401 || error.status === 403) expireSession();
       if (error.status === 409) {
         // Keep typed text available to copy, but never apply it to a different revision/week.
         document.querySelectorAll('.editor:not(.login-dialog)[open] form').forEach(openForm => { openForm.dataset.stale = 'true'; formError(openForm, staleFormMessage); });
@@ -298,7 +301,7 @@
       add(row, el('time', 'review-date', formatDate(entry.at.slice(0, 10))), content, button('Изменить ↗', 'text-button', () => openReview(entry.id))); list.append(row);
     }
   }
-  function render() { if (!state) { setControls(); return; } renderSummary(); renderFilters(); renderGoals(); renderTime(); renderCheckpoints(); renderReviews(); setControls(); }
+  function render() { if (!state) { setControls(); return; } renderSummary(); renderFilters(); renderGoals(); renderTime(); renderCheckpoints(); renderReviews(); setControls(); globalThis.DashboardFinance?.render(); }
   function show(dialog) {
     const form = dialog.querySelector('form');
     if (form) { formError(form); form.dataset.baseRevision = String(revision); delete form.dataset.stale; if (['slotForm', 'capacityForm'].includes(form.id)) form.dataset.weekStart = selectedWeek; }
@@ -313,6 +316,12 @@
     if (!canEdit()) return; const form = $('#goalForm'); form.reset();
     $('#goalDialogTitle').textContent = goal ? 'Изменить цель' : 'Новая цель';
     if (goal) for (const name of ['id', 'title', 'area', 'status', 'target', 'current', 'unit', 'deadline', 'weeklyHours', 'outcome', 'note']) form.elements[name].value = goal[name] ?? '';
+    const managed = Boolean(goal && state.financeSummary?.goalId === goal.id);
+    for (const name of ['current', 'unit']) { form.elements[name].readOnly = managed; form.elements[name].title = managed ? 'Значение ведёт финансовый журнал в разделе «Деньги».' : ''; }
+    let managedNote = $('#managedFinanceGoalNote');
+    if (!managedNote) { managedNote = el('p', 'form-note'); managedNote.id = 'managedFinanceGoalNote'; }
+    if (!form.contains(managedNote)) form.querySelector('.form-error').before(managedNote);
+    managedNote.hidden = !managed; managedNote.textContent = managed ? 'Эта финансовая цель управляется журналом «Деньги»: текущее значение и валюта меняются через поступления.' : '';
     show($('#goalDialog'));
   }
   function prepare(formId, items, itemId, goalId, fields) {
@@ -428,14 +437,14 @@
   $('#loginForm').addEventListener('submit', async event => {
     event.preventDefault(); $('#loginSubmit').disabled = true; $('#loginError').hidden = true;
     try {
-      const result = await api('login', 'POST', { password: $('#loginPassword').value }); authenticated = true; csrfToken = result.csrfToken; sessionToken = result.sessionToken || '';
-      $('#loginPassword').value = ''; await loadState(); $('#loginDialog').close(); $('#connectionError').hidden = true;
+      const result = await api('login', 'POST', { password: $('#loginPassword').value }); authenticated = true; csrfToken = result.csrfToken; sessionToken = result.sessionToken || ''; authEpoch++;
+      $('#loginPassword').value = ''; await loadState(); await globalThis.DashboardFinance?.load(); $('#loginDialog').close(); $('#connectionError').hidden = true;
     } catch (error) { $('#loginError').textContent = error.status === 401 ? 'Пароль не подошёл. Попробуйте ещё раз.' : error.message; $('#loginError').hidden = false; }
     finally { $('#loginSubmit').disabled = false; setControls(); }
   });
   $('#authButton').addEventListener('click', async () => {
     if (!authenticated) return openLogin();
-    try { await api('logout', 'POST', {}); authenticated = false; csrfToken = ''; sessionToken = ''; setControls(); notify('Редактирование заблокировано'); }
+    try { await api('logout', 'POST', {}); authenticated = false; csrfToken = ''; sessionToken = ''; authEpoch++; globalThis.DashboardFinance?.clear(); setControls(); notify('Редактирование заблокировано'); }
     catch (error) { notify(error.message); }
   });
   $('#openLogin').addEventListener('click', openLogin);
@@ -472,9 +481,14 @@
   }
   $('#refreshButton')?.addEventListener('click', refreshPlan);
   async function init() {
+    globalThis.DashboardFinance?.init({
+      api, state: () => state, revision: () => revision, authenticated: () => authenticated, authEpoch: () => authEpoch, today,
+      refreshPublic: loadState, beginSave, endSave, expireSession,
+      openLogin, setState: (nextState, nextRevision) => { if (nextRevision >= revision) { state = nextState; revision = nextRevision; render(); } },
+    });
     // Public reading must remain available even when session lookup is slow or fails.
     api('session').then(session => {
-      if (!authenticated && session.authenticated) { authenticated = true; csrfToken = session.csrfToken || ''; sessionToken = session.sessionToken || ''; }
+      if (!authenticated && session.authenticated) { authenticated = true; csrfToken = session.csrfToken || ''; sessionToken = session.sessionToken || ''; authEpoch++; globalThis.DashboardFinance?.load(); }
       setControls();
     }).catch(() => {});
     try { await loadState(); }

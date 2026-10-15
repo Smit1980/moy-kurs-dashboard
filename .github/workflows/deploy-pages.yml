@@ -8,6 +8,7 @@ on:
       - 'styles.css'
       - 'app.js'
       - 'indicators.js'
+      - 'finance.js'
       - 'config.js'
       - 'versions/**'
       - '.nojekyll'
@@ -35,7 +36,7 @@ jobs:
       - name: Prepare public artifact
         run: |
           mkdir _site
-          cp index.html styles.css app.js indicators.js config.js .nojekyll _site/
+          cp index.html styles.css app.js indicators.js finance.js config.js .nojekyll _site/
           cp -R versions _site/
       - uses: actions/upload-pages-artifact@v3
         with:
