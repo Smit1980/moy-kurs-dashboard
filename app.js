@@ -21,7 +21,7 @@
     n.addEventListener('click', action); return n;
   }
   const apiBase = (globalThis.DASHBOARD_CONFIG?.apiBase || '').replace(/\/$/, '');
-  let state = null, revision = 0, authenticated = false, csrfToken = '', sessionToken = '', saving = false, selectedWeek = '', authEpoch = 0;
+  let state = null, revision = 0, authenticated = false, csrfToken = '', sessionToken = '', saving = false, selectedWeek = '', authEpoch = 0, familyEntries = [];
   const staleFormMessage = 'План изменился. Правки в этой форме не сохранены. Скопируйте нужный текст, закройте форму и откройте актуальную запись заново.';
   const staleForm = form => form && (form.dataset.stale === 'true' || form.dataset.baseRevision !== undefined && Number(form.dataset.baseRevision) !== revision || form.dataset.weekStart && form.dataset.weekStart !== selectedWeek);
 
@@ -55,7 +55,7 @@
   }
   function beginSave() { if (saving) return false; saving = true; setControls(); $('#saveStatus').textContent = 'Сохраняем…'; $('.sync-dot')?.setAttribute('data-state', 'saving'); return true; }
   function endSave(ok) { saving = false; $('#saveStatus').textContent = ok ? 'Все изменения сохранены' : 'Изменения не сохранены'; $('.sync-dot')?.setAttribute('data-state', ok ? 'saved' : 'error'); setControls(); }
-  function expireSession() { authenticated = false; csrfToken = ''; sessionToken = ''; authEpoch++; globalThis.DashboardFinance?.clear(); setControls(); }
+  function expireSession() { authenticated = false; csrfToken = ''; sessionToken = ''; authEpoch++; familyEntries = []; globalThis.DashboardFinance?.clear(); setControls(); renderFamilyTime(); }
   async function loadState() {
     const result = await api('state'); state = result.state; revision = result.revision;
     if (!selectedWeek) selectedWeek = monday(today());
@@ -63,6 +63,11 @@
     $('#connectionError').hidden = true;
     $('#updatedAt').textContent = `Обновлено ${new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit' }).format(new Date())}`;
     $('#saveStatus').textContent = 'Все изменения сохранены'; $('.sync-dot')?.setAttribute('data-state', 'saved'); render(); globalThis.DashboardFinance?.render();
+  }
+  async function loadFamilyTime() {
+    if (!authenticated) { familyEntries = []; renderFamilyTime(); return; }
+    try { const data = await api('family-time'); familyEntries = data.entries || []; renderFamilyTime(); }
+    catch (error) { familyEntries = []; renderFamilyTime(); if (error.status === 401 || error.status === 403) expireSession(); else notify(`Личное расписание не загружено: ${error.message}`); }
   }
   async function mutate(change, form) {
     if (!authenticated || saving) { if (!authenticated) openLogin(); return false; }
@@ -237,6 +242,8 @@
     $('#freeHours').classList.toggle('overload', total > capacity);
     $('#actualSummary').textContent = recorded(schedule).length ? `Факт: ${number(actual)} ч · заполнено ${recorded(schedule).length}/${schedule.length} блоков · ${weekIndicator.description}` : `Факт ещё не внесён · ${weekIndicator.description}`;
     renderWeekOverview(schedule, total, actual, weekIndicator);
+    renderDayCapacity(schedule);
+    renderFamilyTime();
     const segments = $('#loadSegments'); segments.replaceChildren();
     const goals = state.goals.filter(g => g.status === 'active' || g.weeklyHours != null && g.status !== 'paused' && g.status !== 'done' || schedule.some(s => s.goalId === g.id));
     const matrix = $('#goalLoad'); matrix.replaceChildren();
@@ -274,6 +281,50 @@
       }
       if (!slots.length) card.append(el('p', 'empty', 'Пока нет блоков'));
       card.append(button('+ Блок', 'text-button', () => openSlot(null, day))); plan.append(card);
+    });
+  }
+  function renderDayCapacity(schedule) {
+    const grid = $('#dayCapacityGrid'); if (!grid) return;
+    grid.replaceChildren();
+    Object.entries(weekdays).forEach(([day, name], index) => {
+      const used = sum(schedule.filter(slot => slot.day === day)), free = Math.max(0, 5 - used), over = Math.max(0, used - 5);
+      const card = el('article', `day-capacity-card ${over ? 'capacity-over' : free === 0 ? 'capacity-full' : 'capacity-open'}`);
+      const title = el('div', 'day-capacity-heading'); add(title, el('strong', '', shortDays[index]), el('span', '', name));
+      const meter = el('div', 'capacity-meter'); meter.setAttribute('role', 'img'); meter.setAttribute('aria-label', over ? `Перегрузка ${number(over)} рабочих часов` : `Свободно ${number(free)} из 5 рабочих часов`); meter.style.setProperty('--used', `${Math.min(100, used / 5 * 100)}%`);
+      const detail = over ? `Перегрузка ${number(over)} ч` : `Свободно ${number(free)} / 5 ч`;
+      add(card, title, meter, el('strong', 'capacity-detail', detail), el('small', '', `В плане ${number(used)} ч`)); grid.append(card);
+    });
+  }
+  function renderFamilyTime() {
+    const grid = $('#familyTimeGrid'); if (!grid) return;
+    grid.replaceChildren();
+    if (!authenticated) { grid.append(el('p', 'family-time-locked', 'Войдите, чтобы увидеть или заполнить личное расписание.')); return; }
+    Object.entries(weekdays).forEach(([day, name], index) => {
+      const entry = familyEntries.find(item => item.weekStart === selectedWeek && item.day === day);
+      const card = el('article', 'family-time-card'), heading = el('strong', '', shortDays[index]);
+      const context = el('select'); context.setAttribute('aria-label', `${name}: режим дня`);
+      [['kindergarten', 'В садике'], ['home', 'Дома / болеет']].forEach(([value, label]) => { const option = el('option', '', label); option.value = value; context.append(option); });
+      const time = el('input'); time.type = 'time'; time.required = true; time.setAttribute('aria-label', `${name}: начало времени с дочкой`);
+      const help = el('small', 'family-time-rule');
+      context.value = entry?.context || 'kindergarten'; time.value = entry?.startTime || '';
+      const updateRule = () => { const garden = context.value === 'kindergarten'; time.min = garden ? '17:00' : '06:00'; time.max = garden ? '22:00' : '16:59'; help.textContent = garden ? 'Начало с 17:00; блок 2 часа' : 'Начало до 17:00; блок 2 часа'; };
+      context.addEventListener('change', updateRule); updateRule();
+      const save = button('Сохранить 2 ч', 'button outline family-time-save', async () => {
+        if (!time.value) { time.reportValidity(); return; }
+        const mins = Number(time.value.slice(0, 2)) * 60 + Number(time.value.slice(3));
+        if (context.value === 'kindergarten' ? mins < 1020 : mins >= 1020) { notify(context.value === 'kindergarten' ? 'Для режима «В садике» выберите время с 17:00.' : 'Для режима «Дома / болеет» выберите время раньше 17:00.'); return; }
+        save.disabled = true;
+        try {
+          const latest = await api('family-time');
+          const entries = latest.entries.filter(item => !(item.weekStart === selectedWeek && item.day === day));
+          entries.push({ weekStart: selectedWeek, day, context: context.value, startTime: time.value, durationHours: 2 });
+          await api('family-time', 'PUT', { revision: latest.revision, entries });
+          familyEntries = entries; notify(`${name}: время с дочкой сохранено приватно.`); renderFamilyTime();
+        } catch (error) { if (error.status === 401 || error.status === 403) expireSession(); notify(error.status === 409 ? 'План обновился в другой вкладке. Повторите сохранение.' : error.message); }
+        finally { save.disabled = false; }
+      });
+      const summary = entry ? el('small', 'family-time-summary', `${entry.startTime}–${String((Number(entry.startTime.slice(0, 2)) * 60 + Number(entry.startTime.slice(3)) + 120) / 60 | 0).padStart(2, '0')}:${String((Number(entry.startTime.slice(0, 2)) * 60 + Number(entry.startTime.slice(3)) + 120) % 60).padStart(2, '0')} · 2 ч`) : el('small', 'family-time-summary', 'Время не задано');
+      add(card, heading, context, time, help, summary, save); grid.append(card);
     });
   }
   function renderCheckpoints() {
@@ -438,13 +489,13 @@
     event.preventDefault(); $('#loginSubmit').disabled = true; $('#loginError').hidden = true;
     try {
       const result = await api('login', 'POST', { password: $('#loginPassword').value }); authenticated = true; csrfToken = result.csrfToken; sessionToken = result.sessionToken || ''; authEpoch++;
-      $('#loginPassword').value = ''; await loadState(); await globalThis.DashboardFinance?.load(); $('#loginDialog').close(); $('#connectionError').hidden = true;
+      $('#loginPassword').value = ''; await loadState(); await Promise.all([globalThis.DashboardFinance?.load(), loadFamilyTime()]); $('#loginDialog').close(); $('#connectionError').hidden = true;
     } catch (error) { $('#loginError').textContent = error.status === 401 ? 'Пароль не подошёл. Попробуйте ещё раз.' : error.message; $('#loginError').hidden = false; }
     finally { $('#loginSubmit').disabled = false; setControls(); }
   });
   $('#authButton').addEventListener('click', async () => {
     if (!authenticated) return openLogin();
-    try { await api('logout', 'POST', {}); authenticated = false; csrfToken = ''; sessionToken = ''; authEpoch++; globalThis.DashboardFinance?.clear(); setControls(); notify('Редактирование заблокировано'); }
+    try { await api('logout', 'POST', {}); authenticated = false; csrfToken = ''; sessionToken = ''; authEpoch++; familyEntries = []; globalThis.DashboardFinance?.clear(); renderFamilyTime(); setControls(); notify('Редактирование заблокировано'); }
     catch (error) { notify(error.message); }
   });
   $('#openLogin').addEventListener('click', openLogin);
@@ -488,7 +539,7 @@
     });
     // Public reading must remain available even when session lookup is slow or fails.
     api('session').then(session => {
-      if (!authenticated && session.authenticated) { authenticated = true; csrfToken = session.csrfToken || ''; sessionToken = session.sessionToken || ''; authEpoch++; globalThis.DashboardFinance?.load(); }
+      if (!authenticated && session.authenticated) { authenticated = true; csrfToken = session.csrfToken || ''; sessionToken = session.sessionToken || ''; authEpoch++; globalThis.DashboardFinance?.load(); loadFamilyTime(); renderFamilyTime(); }
       setControls();
     }).catch(() => {});
     try { await loadState(); }

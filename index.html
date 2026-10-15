@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light">
-  <title>Мой курс — цели и неделя</title><link rel="stylesheet" href="styles.css?v=20261015c"><script src="config.js" defer></script><script src="indicators.js?v=20261015b" defer></script><script src="finance.js?v=20261015c" defer></script><script src="app.js?v=20261015c" defer></script>
+  <title>Мой курс — цели и неделя</title><link rel="stylesheet" href="styles.css?v=20261015d"><script src="config.js" defer></script><script src="indicators.js?v=20261015b" defer></script><script src="finance.js?v=20261015c" defer></script><script src="app.js?v=20261015d" defer></script>
 </head>
 <body>
   <a href="#workspace" class="skip-link">К содержимому</a>
@@ -39,8 +39,10 @@
       <div class="inline-legend" aria-label="Цвета расписания"><span><i class="legend-dot complete"></i>Выполнено</span><span><i class="legend-dot progress"></i>В процессе</span><span><i class="legend-dot missing"></i>Нет отметки</span><span><i class="legend-dot behind"></i>Не выполнено</span><span><i class="legend-dot neutral"></i>Впереди</span></div>
       <div class="load-overview"><div class="load-number"><strong id="loadHours">—</strong><span id="loadDescription"></span></div><div class="load-visual"><div id="loadSegments" class="load-segments" aria-label="Распределение времени по целям"></div><div class="load-legend"><span id="freeHours"></span><span id="actualSummary"></span></div></div></div>
       <div id="goalLoad" class="goal-load" aria-label="Загрузка недели по целям"></div>
+      <section class="day-capacity-section" aria-labelledby="dayCapacityTitle"><div class="panel-heading"><div><p class="quiet-label">РАБОЧАЯ ЗАГРУЗКА</p><h3 id="dayCapacityTitle">Свободные часы по дням</h3></div><span>до 5 рабочих ч / день</span></div><div id="dayCapacityGrid" class="day-capacity-grid" aria-label="Остаток рабочего времени по дням"></div></section>
+      <section class="family-time-section" aria-labelledby="familyTimeTitle"><div class="panel-heading"><div><p class="quiet-label">ЛИЧНЫЙ РЕЖИМ · ТОЛЬКО ПОСЛЕ ВХОДА</p><h3 id="familyTimeTitle">Время с дочкой</h3></div><span>2 ч в выбранный день</span></div><p class="family-time-note">Для каждого дня задайте время. Если дочка в садике — начало с 17:00; если дома или болеет — выберите время раньше. Эти сведения доступны только после входа.</p><div id="familyTimeGrid" class="family-time-grid"></div></section>
       <details class="daily-details"><summary>Расписание по дням <span aria-hidden="true">↓</span></summary><div id="weekPlan" class="week-plan"></div></details>
-      <p class="section-note">Блоки и факт сохраняются отдельно для каждой недели. Семейное и утреннее личное время обсуждались вне рабочего бюджета.</p>
+      <p class="section-note">Блоки и факт сохраняются отдельно для каждой недели. Время с дочкой хранится отдельно и не публикуется.</p>
     </section>
     <section id="goals" class="section">
       <div class="section-head"><div><h2>Цели и результаты.</h2><p>Меняйте показатели, сроки и фокус по мере появления фактов.</p></div><button id="addGoal" class="button outline" data-edit type="button">Новая цель +</button></div>
