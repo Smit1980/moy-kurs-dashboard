@@ -135,6 +135,17 @@
     return points.length ? points.filter(point => point.done).length / points.length * 100 : null;
   }
 
+  function goalProgressLabel(goal, points) {
+    if (goal.status === 'done') return '100% результата достигнуто';
+    if (goal.target !== null && goal.target !== undefined && goal.target !== '' && Number(goal.target) > 0) {
+      const current = goal.current === null || goal.current === undefined || goal.current === '' ? null : Number(goal.current);
+      return current === null ? 'Прогресс: нет фактического значения' : `Выполнено ${Math.round(Math.min(100, Math.max(0, current / Number(goal.target) * 100)))}% · ${number(current)} из ${number(goal.target)} ${goal.unit || ''}`.trim();
+    }
+    if (!points.length) return 'Добавьте контрольную точку, чтобы считать прогресс';
+    const done = points.filter(point => point.done).length;
+    return `Контрольные точки: ${done} из ${points.length} · ${Math.round(done / points.length * 100)}%`;
+  }
+
   function renderSummary() {
     $('#todayLabel').textContent = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
     $('#activeCount').textContent = state.goals.filter(g => g.status === 'active').length;
@@ -174,6 +185,7 @@
           const track = el('div', 'progress-track'), fill = el('span', 'progress-bar'); fill.style.width = `${Math.min(100, Math.max(0, Number(goal.current) / Number(goal.target) * 100))}%`; track.append(fill); metric.append(track);
         } else metric.append(el('small', '', 'Фактическое значение ещё не внесено'));
       } else metric.append(el('small', '', goal.status === 'done' ? 'Результат отмечен вручную как достигнутый' : 'Результат оценивается по контрольным точкам'));
+      metric.append(el('small', 'goal-progress-label', goalProgressLabel(goal, points)));
       const meta = el('div', 'goal-meta');
       add(meta, el('span', '', `Срок: ${formatDate(goal.deadline)}`), el('span', '', `${points.filter(c => c.done).length}/${points.length} точек`));
       if (goal.weeklyHours !== null && goal.weeklyHours !== undefined) meta.append(el('span', '', `Ориентир: ${number(goal.weeklyHours)} ч/нед`));
@@ -336,7 +348,9 @@
       const pointState = item.done ? indicators.statusMeta.complete : overdue ? indicators.statusMeta.missing : indicators.statusMeta.neutral;
       const row = el('article', `checkpoint ${item.done ? 'completed' : ''} ${overdue ? 'checkpoint-overdue' : ''}`), check = el('input'); check.type = 'checkbox'; check.checked = item.done; check.dataset.edit = ''; check.setAttribute('aria-label', `Выполнено: ${item.title}`);
       check.addEventListener('change', async () => { const done = check.checked; await mutate(draft => { const cp = draft.checkpoints.find(c => c.id === item.id); cp.done = done; cp.completedAt = done ? new Date().toISOString() : null; }); });
-      const content = el('div', 'checkpoint-body'); add(content, el('strong', '', item.title), el('span', '', `${goalName(item.goalId)}${item.criterion ? ` · ${item.criterion}` : ''}`));
+      const content = el('div', 'checkpoint-body'), relatedGoal = state.goals.find(goal => goal.id === item.goalId);
+      add(content, el('strong', '', item.title), el('span', 'checkpoint-goal', `Относится к цели: ${relatedGoal ? `${relatedGoal.area} · ${relatedGoal.title}` : goalName(item.goalId)}`));
+      if (item.criterion) content.append(el('span', 'checkpoint-criterion', `Критерий: ${item.criterion}`));
       const right = el('div', 'checkpoint-right'); add(right, statusNode(pointState), el('time', overdue ? 'overload' : '', formatDate(item.due)), el('small', `status-text-${pointState.key}`, pointState.label), button('Изменить ↗', 'text-button', () => openCheckpoint(item.id)));
       add(row, check, content, right); list.append(row);
     }

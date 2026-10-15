@@ -25,6 +25,7 @@ body{min-width:0}
 .goal-load-day:hover{border-color:var(--ink)}
 .metric>small{display:block;margin:10px 0;color:var(--muted);font-size:11px;line-height:1.45}
 .goal-meta{flex-wrap:wrap}
+.goal-progress-label{font-weight:700;color:var(--ink)!important}
 .goal-actions{display:flex;flex-wrap:wrap;gap:14px;margin-top:16px}
 .slot strong,.slot span{display:block}
 .slot span{margin-top:5px;color:var(--muted)}
