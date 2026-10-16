@@ -169,6 +169,7 @@ main { max-width: 1360px; padding: 0 28px 28px; }
 .load-segment, .load-gap { height: 12px; }
 .load-legend { font-size: 11px; }
 #actualSummary { max-width: 420px; text-align: right; }
+#freeHours.overload { display: inline-block; font-size: clamp(22px, 2.4vw, 32px); line-height: 1.1; font-weight: 800; letter-spacing: -.03em; }
 .goal-load-head, .goal-load-row { grid-template-columns: minmax(190px,1fr) minmax(250px,1.55fr) 165px; gap: 20px; }
 .goal-load-head { font-size: 10px; letter-spacing: .02em; }
 .goal-load-row { min-height: 85px; padding-block: 10px; }
